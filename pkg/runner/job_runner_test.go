@@ -1,8 +1,12 @@
 package runner
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"math"
 	"math/rand"
+	"os"
 	"testing"
 	"time"
 
@@ -46,23 +50,23 @@ type testCase struct {
 
 	JobTime time.Duration
 
-	expectedStatCnt int
-	ExpectedRunTime time.Duration
-	expectedOkCnt   int64
-	expectedErrCnt  int64
-	expectedOkRate  float64
-	expectedErrRate float64
+	expectedStatCnt        int
+	ExpectedRunElapsedTime time.Duration
+	expectedOkCnt          int64
+	expectedErrCnt         int64
+	expectedOkRate         float64
+	expectedErrRate        float64
 }
 
 func TestAll(t *testing.T) {
 	rates := []float64{1, 20, 300, 4000, 20000}
-	bursts := []int{1, 4096}
-	runTimes := []time.Duration{4 * time.Second, 10 * time.Second, 60 * time.Second}
-	errorRates := []float64{0.0, 0.3}
-	jobMaxExecTimes := []time.Duration{0, 10 * time.Millisecond, 100 * time.Millisecond, 1 * time.Second}
+	bursts := []int{1, 1000, 10000}
+	statInterval := 2 * time.Second
+	runTimes := []time.Duration{4 * time.Second, 11 * time.Second}
+	errorRates := []float64{0.0, 0.2}
+	jobMaxExecTimes := []time.Duration{0, 10 * time.Millisecond, 1 * time.Second}
 
 	rampDown := 500 * time.Millisecond
-	statInterval := 2 * time.Second
 	tt := []testCase{}
 	rand.Seed(time.Now().UTC().UnixNano())
 
@@ -75,22 +79,30 @@ func TestAll(t *testing.T) {
 						if expectedStatcnt == 0 {
 							expectedStatcnt++
 						}
+						if int(rate)/burst > 400 {
+							continue
+						}
+
+						if burst > 1000 && rate < 1000 {
+							continue
+						}
+						expectedStatCnt := int(math.Ceil(float64(d) / float64(statInterval)))
 						tc :=
 							testCase{
-								name:            fmt.Sprintf("rate%v_burst%v_runTime%v_errRate%v_jobTime%v_interval%v", rate, burst, d, errRate, jobTime, statInterval),
-								burst:           burst,
-								rate:            rate,
-								RunPeriod:       d,
-								RampDown:        rampDown,
-								errRate:         errRate,
-								StatInterval:    statInterval,
-								JobTime:         jobTime,
-								expectedStatCnt: int(d / statInterval),
-								ExpectedRunTime: d,
-								expectedOkCnt:   int64((float64(d / time.Second)) * rate * (1.0 - errRate)),
-								expectedErrCnt:  int64((float64(d / time.Second)) * rate * errRate),
-								expectedOkRate:  rate * (1.0 - errRate),
-								expectedErrRate: rate * errRate,
+								name:                   fmt.Sprintf("rate%v_burst%v_runTime%v_errRate%v_jobTime%v_interval%v", rate, burst, d, errRate, jobTime, statInterval),
+								burst:                  burst,
+								rate:                   rate,
+								RunPeriod:              d,
+								RampDown:               rampDown,
+								errRate:                errRate,
+								StatInterval:           statInterval,
+								JobTime:                jobTime,
+								expectedStatCnt:        expectedStatCnt,
+								ExpectedRunElapsedTime: time.Duration(expectedStatCnt) * statInterval,
+								expectedOkCnt:          int64((float64(d / time.Second)) * rate * (1.0 - errRate)),
+								expectedErrCnt:         int64((float64(d / time.Second)) * rate * errRate),
+								expectedOkRate:         rate * (1.0 - errRate),
+								expectedErrRate:        rate * errRate,
 							}
 						tt = append(tt, tc)
 					}
@@ -103,13 +115,15 @@ func TestAll(t *testing.T) {
 
 		t.Run(tc.name, func(t *testing.T) {
 			statChan := make(chan Stat, tc.expectedStatCnt)
-			go Run(tc.RunPeriod, tc.RampDown, tc.rate, tc.burst, tc.StatInterval, statChan, jobHandleFunc(tc.errRate, tc.JobTime))
+			ctx := context.Background()
+			l := log.New(os.Stderr, "", log.LstdFlags)
+			go Run(ctx, l, tc.RunPeriod, tc.RampDown, tc.rate, tc.burst, tc.StatInterval, statChan, jobHandleFunc(tc.errRate, tc.JobTime))
 
 			okCntTotal, errCntTotal := int64(0), int64(0)
 			startTime := time.Now()
 
 			stats := []Stat{}
-
+			passed := true
 			for s := range statChan {
 				stats = append(stats, s)
 				okCntTotal += s.OkCnt
@@ -126,13 +140,13 @@ func TestAll(t *testing.T) {
 				}
 				if okRate != 0 && tc.expectedOkRate > 0 {
 					epsilon := 0.5
-					assert.InEpsilon(t, tc.expectedOkRate, okRate, epsilon,
+					passed = passed && assert.InEpsilon(t, tc.expectedOkRate, okRate, epsilon,
 						"okRate: %+v \n%+v \nexpected %v actual %v epsilon %v", tc, s, tc.expectedOkRate, okRate, epsilon)
-					// log.Printf("%+v %+v okRate expected %v actual %v", tc, s, tc.expectedOkRate, okRate)
+
 				}
 				if errRate != 0 && tc.expectedErrRate > 0 {
 					epsilon := 1.0
-					assert.InEpsilon(t, tc.expectedErrRate, errRate, epsilon,
+					passed = passed && assert.InEpsilon(t, tc.expectedErrRate, errRate, epsilon,
 						"errRate: %+v \n%+v \nexpected %v actual %v epsilon %v", tc, s, tc.expectedErrRate, errRate, epsilon)
 					// log.Printf("%+v %+v errRate expected %v actual %v", tc, s, tc.expectedErrRate, errRate)
 				}
@@ -140,45 +154,41 @@ func TestAll(t *testing.T) {
 				if s.OkCnt != 0 && tc.JobTime >= time.Millisecond {
 					avgDoTime := s.SumDoTime / time.Duration(s.OkCnt)
 					//skill
-					assert.InEpsilon(t, tc.JobTime, avgDoTime, 0.5, "avgDoTime: %+v \n%+v \nexpected %v actual %v", tc, s, tc.JobTime, avgDoTime)
+					passed = passed && assert.InEpsilon(t, tc.JobTime, avgDoTime, 0.5, "avgDoTime: %+v \n%+v \nexpected %v actual %v", tc, s, tc.JobTime, avgDoTime)
 				}
 			}
 
 			elapsed := time.Since(startTime)
 
 			statCntDelta := 1.0
-			if !assert.InDelta(t, tc.expectedStatCnt, len(stats), statCntDelta,
-				"stat cnt:%+v \nexpected%v,actual %v delta %v", tc, tc.expectedStatCnt, len(stats), statCntDelta) {
-				printStats(stats)
-			}
+			passed = passed && assert.InDelta(t, tc.expectedStatCnt, len(stats), statCntDelta,
+				"stat cnt:%+v \nexpected%v,actual %v delta %v", tc, tc.expectedStatCnt, len(stats), statCntDelta)
 
 			delta := tc.RampDown + tc.StatInterval
 			if tc.JobTime > delta {
 				delta = tc.JobTime + tc.StatInterval
 			}
 
-			if !assert.InDelta(t, int64(tc.ExpectedRunTime), int64(elapsed), float64(delta+500*time.Millisecond),
-				"Runtime: %+v\n Expected %s,\t actual %s,\t delta %s", tc, tc.ExpectedRunTime, elapsed, delta+500*time.Millisecond) {
-				printStats(stats)
-			}
+			passed = passed && assert.InDelta(t, int64(tc.ExpectedRunElapsedTime), int64(elapsed), float64(delta+500*time.Millisecond),
+				"Runtime: %+v\n Expected %s,\t actual %s,\t delta %s", tc, tc.ExpectedRunElapsedTime, elapsed, delta+500*time.Millisecond)
 
 			//when jobTime is greater than ramp downTime, job results discarded
 			//we expected all job to be handled unless
 			if okCntTotal != 0 && tc.expectedOkCnt > 10 && tc.JobTime < tc.RampDown {
 				epsilon := 0.2
-				if !assert.InEpsilon(t, tc.expectedOkCnt, okCntTotal, epsilon,
-					"Total OK Cnt: %+v \n expected %v actual %v epsilon %v", tc, tc.expectedOkCnt, okCntTotal, epsilon) {
-					printStats(stats)
-				}
+				passed = passed && assert.InEpsilon(t, tc.expectedOkCnt, okCntTotal, epsilon,
+					"Total OK Cnt: %+v \n expected %v actual %v epsilon %v", tc, tc.expectedOkCnt, okCntTotal, epsilon)
 			}
 			if errCntTotal != 0 && tc.expectedErrCnt > 10 && tc.JobTime < tc.RampDown {
-				epsilon := 0.2
-				if !assert.InEpsilon(t, tc.expectedErrCnt, errCntTotal, epsilon,
-					"Total errCnt:  %+v \n expected %v actual %v epsilon %v", tc, tc.expectedErrCnt, errCntTotal, epsilon) {
-					printStats(stats)
-				}
+				epsilon := 0.5
+				passed = passed && assert.InEpsilon(t, tc.expectedErrCnt, errCntTotal, epsilon,
+					"Total errCnt:  %+v \n expected %v actual %v epsilon %v", tc, tc.expectedErrCnt, errCntTotal, epsilon)
 			}
-			// log.Printf("case %+v:\tElapsed time %v,\tTotal %v,\tdone %v,\terrors %v", tc.name, elapsed, okCntTotal+errCntTotal, okCntTotal, errCntTotal)
+			if !passed {
+				log.Printf("case %+v:\tElapsed time %v,\tTotal %v,\tdone %v,\terrors %v", tc.name, elapsed, okCntTotal+errCntTotal, okCntTotal, errCntTotal)
+				printStats(stats)
+			}
+
 		})
 	}
 

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"runtime/debug"
 	"sync"
@@ -32,7 +33,7 @@ type Response struct {
 
 //worker process the job request
 //After job is done, it sends result to resChan. it will discard results if  distcardResult signal received.
-func worker(discardResult <-chan struct{}, wg *sync.WaitGroup, req Request, resChan chan<- Response, errChan chan<- error, handleFunc func(job Request) (Response, error)) {
+func worker(l *log.Logger, discardResult <-chan struct{}, wg *sync.WaitGroup, req Request, resChan chan<- Response, errChan chan<- error, handleFunc func(job Request) (Response, error)) {
 
 	defer func() {
 		if rvr := recover(); rvr != nil {
@@ -48,7 +49,7 @@ func worker(discardResult <-chan struct{}, wg *sync.WaitGroup, req Request, resC
 	select {
 
 	case <-discardResult: //controller ask to discardResult as resChan and errChan are to be closed
-		fmt.Fprintf(os.Stderr, "Result discard: %+v, err: %v\n", res, err)
+		l.Printf("Result discard: %+v, err: %v\n", res, err)
 		return
 	default:
 		if err != nil {
@@ -82,7 +83,7 @@ func WaitTimeout(ctx context.Context, graceTime time.Duration, wg *sync.WaitGrou
 //processJobs:
 //  invoke workers at rate to do jobs
 //	close resChan and errChan when returns
-func processJobs(ctx context.Context, requestPerSec float64, runPeriod, rampDown time.Duration, resChan chan<- Response, errChan chan<- error, handleFunc func(job Request) (Response, error)) {
+func processJobs(ctx context.Context, l *log.Logger, requestPerSec float64, burst int, runPeriod, rampDown time.Duration, resChan chan<- Response, errChan chan<- error, handleFunc func(job Request) (Response, error)) {
 	// var flagQuit uint64
 
 	// use a WaitGroup
@@ -93,17 +94,24 @@ func processJobs(ctx context.Context, requestPerSec float64, runPeriod, rampDown
 
 	//by default , we send 1 request for each cycle
 	// for 10 request/second, we do 10 cycles
+
 	timePerCycle := time.Second / time.Duration(requestPerSec)
 	requestPerCycle := 1
 
 	//when requested rate is high, we send multpile requests in one cycle
 	//time.tick() wont give us precise control when cycle is less than 1 ms.
-	for timePerCycle < 20*time.Millisecond { // chosen arbitrarily
+	//max num of worker in one cycle is limited by burst
+	for (timePerCycle < 20*time.Millisecond) && (requestPerCycle <= burst) {
+		// 20*time.Millisecond chosen so that ticker time is [10ms,20ms)
 		requestPerCycle *= 2
 		timePerCycle *= 2
 	}
 
 	throttle := time.Tick(timePerCycle)
+
+	if timePerCycle < time.Millisecond {
+		l.Printf("burst %v too small for rate %v", burst, requestPerSec)
+	}
 
 	//run period
 	ctxRun, cancel := context.WithTimeout(ctx, runPeriod)
@@ -124,7 +132,7 @@ ForLoop:
 			for i := 0; i < requestPerCycle; i++ {
 				req := newJob()
 				wg.Add(1)
-				go worker(discardResult, &wg, req, resChan, errChan, handleFunc)
+				go worker(l, discardResult, &wg, req, resChan, errChan, handleFunc)
 				req2Send--
 				if req2Send == 0 {
 					break ForLoop
@@ -215,18 +223,41 @@ forLoop:
 }
 
 //Run process requests at a fixed rate for runPeriod
-func Run(runPeriod, waitToComplete time.Duration, rate float64, burst int, statInterval time.Duration, statChan chan<- Stat, handleFunc func(job Request) (Response, error)) {
+func Run(ctx context.Context, l *log.Logger, runPeriod, waitToComplete time.Duration, requestPerSec float64, burst int, statInterval time.Duration, statChan chan<- Stat, handleFunc func(job Request) (Response, error)) {
+
+	if requestPerSec <= 0 {
+		l.Fatalf("rate %v must be >0", requestPerSec)
+	}
+
+	if runPeriod <= 0 {
+		l.Fatalf("runPeriod %v must be >0", runPeriod)
+	}
+
+	if waitToComplete < 0 {
+		l.Fatalf("waitToComplete %v must be >= 0", waitToComplete)
+	}
+
+	if burst <= 0 || burst > 10000 {
+		l.Fatalf("burst %v must between  1 and 10000", burst)
+	}
+	if requestPerSec/float64(burst) > 1000.0 {
+		l.Fatalf("burst %v too small for rate %v", burst, requestPerSec)
+	}
+
+	if statInterval <= 0 {
+		l.Fatalf("statInterval %v must be >0", statInterval)
+	}
 
 	resChan := make(chan Response, burst)
 	errChan := make(chan error, burst)
 
 	totalDuration := runPeriod + waitToComplete
-	ctx, cancel := context.WithTimeout(context.Background(), totalDuration)
+	ctxctx, cancel := context.WithTimeout(ctx, totalDuration)
 	defer cancel()
 
 	defer close(statChan)
 
-	go processJobs(ctx, rate, runPeriod, waitToComplete, resChan, errChan, handleFunc)
+	go processJobs(ctxctx, l, requestPerSec, burst, runPeriod, waitToComplete, resChan, errChan, handleFunc)
 
 	for statNum := 0; ; statNum++ {
 		s, eof := calcStat(statInterval, resChan, errChan)

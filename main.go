@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/jusongchen/jobRunner/pkg/runner"
@@ -56,9 +59,9 @@ func main() {
 
 	tc := testCase{
 		name:         "main",
-		burst:        1,
-		rate:         20,
-		runPeriod:    10 * time.Second,
+		burst:        1e4,
+		rate:         1,
+		runPeriod:    4 * time.Second,
 		rampDown:     time.Second,
 		errRate:      0,
 		statInterval: 2 * time.Second,
@@ -66,7 +69,10 @@ func main() {
 	}
 
 	statChan := make(chan runner.Stat)
-	go runner.Run(tc.runPeriod, tc.rampDown, tc.rate, tc.burst, tc.statInterval, statChan, jobHandleFunc(tc.errRate, tc.jobTime))
+	ctx := context.Background()
+	l := log.New(os.Stderr, "", log.LstdFlags)
+
+	go runner.Run(ctx, l, tc.runPeriod, tc.rampDown, tc.rate, tc.burst, tc.statInterval, statChan, jobHandleFunc(tc.errRate, tc.jobTime))
 
 	okCntTotal, errCntTotal := int64(0), int64(0)
 	// startTime := time.Now()
