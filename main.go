@@ -9,7 +9,6 @@ import (
 )
 
 func jobHandleFunc(errRate float64, jobTime time.Duration) func(job runner.Request) (runner.Response, error) {
-	rand.Seed(time.Now().UTC().UnixNano())
 
 	return func(job runner.Request) (runner.Response, error) {
 		begin := time.Now()
@@ -53,11 +52,12 @@ type testCase struct {
 }
 
 func main() {
+	rand.Seed(time.Now().UTC().UnixNano())
 
 	tc := testCase{
 		name:         "main",
 		burst:        1,
-		rate:         1,
+		rate:         20,
 		runPeriod:    10 * time.Second,
 		rampDown:     time.Second,
 		errRate:      0,
@@ -79,5 +79,6 @@ func main() {
 		// errRate := s.ErrCnt * int64(time.Second) / int64(interval)
 		fmt.Printf("%#v\n", s)
 	}
+	fmt.Printf("Total %v , Ok %v, Err %v", okCntTotal+errCntTotal, okCntTotal, errCntTotal)
 
 }
