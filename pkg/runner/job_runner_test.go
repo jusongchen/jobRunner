@@ -138,14 +138,20 @@ func TestAll(t *testing.T) {
 				if tc.JobTime > tc.RampDown {
 					continue //some results will be discarded
 				}
-				if okRate != 0 && tc.expectedOkRate > 0 {
+				if okRate != 0 && tc.expectedOkRate > 5 {
 					epsilon := 0.5
+					if tc.rate > 10 {
+						epsilon /= math.Log10(tc.rate)
+					}
 					passed = passed && assert.InEpsilon(t, tc.expectedOkRate, okRate, epsilon,
 						"okRate: %+v \n%+v \nexpected %v actual %v epsilon %v", tc, s, tc.expectedOkRate, okRate, epsilon)
 
 				}
-				if errRate != 0 && tc.expectedErrRate > 0 {
+				if errRate != 0 && tc.expectedErrRate > 5 {
 					epsilon := 1.0
+					if tc.rate > 10 {
+						epsilon /= math.Log10(tc.rate)
+					}
 					passed = passed && assert.InEpsilon(t, tc.expectedErrRate, errRate, epsilon,
 						"errRate: %+v \n%+v \nexpected %v actual %v epsilon %v", tc, s, tc.expectedErrRate, errRate, epsilon)
 					// log.Printf("%+v %+v errRate expected %v actual %v", tc, s, tc.expectedErrRate, errRate)
@@ -153,8 +159,12 @@ func TestAll(t *testing.T) {
 
 				if s.OkCnt != 0 && tc.JobTime >= time.Millisecond {
 					avgDoTime := s.SumDoTime / time.Duration(s.OkCnt)
+					epsilon := 0.5
+					if tc.rate > 10 {
+						epsilon /= math.Log10(tc.rate)
+					}
 					//skill
-					passed = passed && assert.InEpsilon(t, tc.JobTime, avgDoTime, 0.5, "avgDoTime: %+v \n%+v \nexpected %v actual %v", tc, s, tc.JobTime, avgDoTime)
+					passed = passed && assert.InEpsilon(t, tc.JobTime, avgDoTime, epsilon, "avgDoTime: %+v \n%+v \nexpected %v actual %v epsilon %v", tc, s, tc.JobTime, avgDoTime, epsilon)
 				}
 			}
 
@@ -170,17 +180,23 @@ func TestAll(t *testing.T) {
 			}
 
 			passed = passed && assert.InDelta(t, int64(tc.ExpectedRunElapsedTime), int64(elapsed), float64(delta+500*time.Millisecond),
-				"Runtime: %+v\n Expected %s,\t actual %s,\t delta %s", tc, tc.ExpectedRunElapsedTime, elapsed, delta+500*time.Millisecond)
+				"elapsed Runtime: %+v\n Expected %s,\t actual %s,\t delta %s", tc, tc.ExpectedRunElapsedTime, elapsed, delta+500*time.Millisecond)
 
 			//when jobTime is greater than ramp downTime, job results discarded
 			//we expected all job to be handled unless
 			if okCntTotal != 0 && tc.expectedOkCnt > 10 && tc.JobTime < tc.RampDown {
 				epsilon := 0.2
+				if tc.rate > 10 {
+					epsilon /= math.Log10(tc.rate)
+				}
 				passed = passed && assert.InEpsilon(t, tc.expectedOkCnt, okCntTotal, epsilon,
 					"Total OK Cnt: %+v \n expected %v actual %v epsilon %v", tc, tc.expectedOkCnt, okCntTotal, epsilon)
 			}
 			if errCntTotal != 0 && tc.expectedErrCnt > 10 && tc.JobTime < tc.RampDown {
-				epsilon := 0.5
+				epsilon := 2.0
+				if tc.rate > 10 {
+					epsilon /= math.Log10(tc.rate)
+				}
 				passed = passed && assert.InEpsilon(t, tc.expectedErrCnt, errCntTotal, epsilon,
 					"Total errCnt:  %+v \n expected %v actual %v epsilon %v", tc, tc.expectedErrCnt, errCntTotal, epsilon)
 			}

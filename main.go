@@ -60,8 +60,8 @@ func main() {
 	tc := testCase{
 		name:         "main",
 		burst:        1e4,
-		rate:         1,
-		runPeriod:    4 * time.Second,
+		rate:         20,
+		runPeriod:    7 * time.Second,
 		rampDown:     time.Second,
 		errRate:      0,
 		statInterval: 2 * time.Second,
@@ -77,6 +77,7 @@ func main() {
 	okCntTotal, errCntTotal := int64(0), int64(0)
 	// startTime := time.Now()
 
+	fmt.Printf("%#v\n", tc)
 	// statCnt := 0
 	for s := range statChan {
 		okCntTotal += s.OkCnt
